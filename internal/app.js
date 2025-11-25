@@ -353,16 +353,38 @@ function progressSim(done){
   step();
 }
 
-async function getBackendOutcomes(text){
-  const payload = {
-    text,
-    filters: {
-      advice_type: filters.adviceType,
-      channel: filters.channel,
-      age_band: filters.ageBand,
-      vulnerable: filters.vulnerable
+// Call Netlify function → Render backend and return parsed JSON
+async function getBackendOutcomes(text, filters) {
+  try {
+    const response = await fetch('/.netlify/functions/analyze', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text,
+        filters
+      })
+    });
+
+    // If HTTP status is not OK, log and bail out
+    if (!response.ok) {
+      console.error('Backend HTTP error', response.status);
+      return null;
     }
-  };
+
+    // Parse JSON from the backend
+    const data = await response.json();
+
+    // You can adapt this depending on what you want to use:
+    // - return data.outcomes if you only care about rule outcomes
+    // - or return the whole object and handle it elsewhere
+    return data;
+  } catch (err) {
+    console.error('Backend call failed', err);
+    return null;
+  }
+}
 
   const response = await fetch('/.netlify/functions/analyze', {
   method: 'POST',
