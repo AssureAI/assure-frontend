@@ -386,11 +386,7 @@ async function getBackendOutcomes(text, filters) {
   }
 }
 
-  const response = await fetch('/.netlify/functions/analyze', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(payload),
-});
+
 
   const raw = await res.text();
   let data = {};
