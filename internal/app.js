@@ -340,28 +340,68 @@ function renderAccordion(data) {
           }
         `;
 
-        const body = document.createElement('div');
-        const bits = [];
+    const body = document.createElement('div');
+const bits = [];
 
-        if (rule.requirement) {
-          bits.push(`<div><strong>Requirement:</strong> ${rule.requirement}</div>`);
-        }
-        if (rule.why) {
-          bits.push(`<div><strong>Why it matters:</strong> ${rule.why}</div>`);
-        }
-        if (rule.snippet || rule.evidence) {
-          bits.push(
-            `<div><strong>Evidence:</strong> <span class="refs">${
-              rule.snippet || rule.evidence
-            }</span></div>`
-          );
-        }
-        if (!bits.length && rule.detail) {
-          bits.push(`<div>${rule.detail}</div>`);
-        }
+// Requirement / obligation
+const requirementText =
+  rule.requirement ||
+  rule.requirements ||
+  rule.obligation ||
+  rule.rule_text;
 
-        body.innerHTML = bits.join('') || '<div class="refs">No additional detail provided.</div>';
+if (requirementText) {
+  bits.push(
+    `<div><strong>Requirement:</strong> ${requirementText}</div>`
+  );
+}
 
+// Why / rationale / explanation
+const whyText =
+  rule.why ||
+  rule.reason ||
+  rule.explanation ||
+  rule.explanations ||
+  rule.context;
+
+if (whyText) {
+  bits.push(
+    `<div><strong>Why it matters / Explanation:</strong> ${whyText}</div>`
+  );
+}
+
+// Fix / remediation suggestion
+const fixText =
+  rule.fix ||
+  rule.fix_suggestion ||
+  rule.remediation ||
+  rule.suggestion;
+
+if (fixText) {
+  bits.push(
+    `<div><strong>Suggested fix:</strong> ${fixText}</div>`
+  );
+}
+
+// Evidence / snippet from the report
+const evidenceText = rule.snippet || rule.evidence || rule.text_match;
+
+if (evidenceText) {
+  bits.push(
+    `<div><strong>Evidence:</strong> <span class="refs">${evidenceText}</span></div>`
+  );
+}
+
+// Fallback if nothing else was populated
+if (!bits.length && rule.detail) {
+  bits.push(`<div>${rule.detail}</div>`);
+}
+if (!bits.length && rule.description) {
+  bits.push(`<div>${rule.description}</div>`);
+}
+
+body.innerHTML =
+  bits.join('') || '<div class="refs">No additional detail provided.</div>';
         ruleDiv.appendChild(ruleHead);
         ruleDiv.appendChild(body);
         inner.appendChild(ruleDiv);
