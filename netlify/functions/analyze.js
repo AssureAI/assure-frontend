@@ -1,59 +1,79 @@
 // netlify/functions/analyze.js
-// Secure proxy from Netlify -> Render backend
 
-const RENDER_URL = 'https://assure-backend.onrender.com/analyze';
+const ANALYZER_URL = 'https://assure-backend-2.onrender.com/analyze';
 
-// Use the existing Vite-style env var that you said is already set in Netlify
-// Make sure VITE_API_KEY is configured in your Netlify site's environment variables.
-const API_KEY = process.env.VITE_API_KEY;
-
-/**
- * Netlify serverless function
- * Browser -> /.netlify/functions/analyze -> Render backend (/analyze)
- */
-exports.handler = async function (event, context) {
+exports.handler = async (event) => {
   // Only allow POST
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
-      body: 'Method Not Allowed',
+      body: 'Method Not Allowed'
     };
   }
 
-  if (!API_KEY) {
-    console.error('VITE_API_KEY is not set in Netlify environment variables');
+  // Parse incoming JSON from the browser
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch (e) {
     return {
-      statusCode: 500,
-      body: 'Server misconfiguration: API key missing',
+      statusCode: 400,
+      body: JSON.stringify({ error: 'Invalid JSON body' })
     };
   }
+
+  const { text, filters } = body;
+
+  if (!text || typeof text !== 'string') {
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: 'Missing or invalid `text` field' })
+    };
+  }
+
+  // Map front-end filters into advice_context for the backend
+  const adviceContext = {
+    advice_type: filters?.advice_type || 'standard',
+    channel: filters?.channel || 'advised',
+    age_band: filters?.age_band || '55_70',
+    vulnerable: !!filters?.vulnerable
+  };
+
+  const payload = {
+    report_text: text,
+    advice_context: adviceContext,
+    options: {
+      include_explanations: true,
+      include_fix_suggestions: true
+    }
+  };
 
   try {
-    // Forward original request body on to your Render backend
-    const response = await fetch(RENDER_URL, {
+    const resp = await fetch(ANALYZER_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Secret stays on the server – browser never sees this header
-        'Authorization': `Bearer ${API_KEY}`,
-      },
-      body: event.body,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
 
-    const text = await response.text();
+    // Pass through backend status + body
+    const respText = await resp.text();
 
     return {
-      statusCode: response.status,
+      statusCode: resp.status,
       headers: {
-        'Content-Type': response.headers.get('content-type') || 'application/json',
+        'Content-Type':
+          resp.headers.get('content-type') || 'application/json'
       },
-      body: text,
+      body: respText
     };
   } catch (err) {
-    console.error('Error calling Render backend:', err);
+    // If Render is down or network error
     return {
       statusCode: 502,
-      body: 'Error contacting analysis backend',
+      body: JSON.stringify({
+        error: 'Failed to reach analyzer backend',
+        detail: err.message || String(err)
+      })
     };
   }
 };
