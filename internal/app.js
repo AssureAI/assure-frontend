@@ -1,357 +1,145 @@
-// PDF worker setup (safe guard)
-if (typeof window !== 'undefined' && window.pdfjsLib) {
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82/pdf.worker.min.js';
+// internal/app.js
+// Front-end controller for Assure.ai internal demo
+
+// -----------------------------
+// DOM ELEMENTS
+// -----------------------------
+
+const srTextEl = document.getElementById('srText');
+const loadGoodBtn = document.getElementById('loadGood');
+const loadBadBtn = document.getElementById('loadBad');
+const fileInputEl = document.getElementById('fileInput');
+const adviceTypeEl = document.getElementById('adviceType');
+const channelEl = document.getElementById('channel');
+const ageBandEl = document.getElementById('ageBand');
+const vulnerableEl = document.getElementById('vulnerable');
+const runBtn = document.getElementById('runBtn');
+const exportBtn = document.getElementById('exportBtn');
+
+const progressEl = document.getElementById('progress');
+const barEl = document.getElementById('bar');
+const barLabelEl = document.getElementById('barLabel');
+
+const overallEl = document.getElementById('overall');
+const contextNoteEl = document.getElementById('contextNote');
+const accordionEl = document.getElementById('accordion');
+
+// Last backend response (for export)
+let lastBackendResult = null;
+
+// -----------------------------
+// SAMPLE TEXTS
+// -----------------------------
+
+const GOOD_SAMPLE = `Client: Mr & Mrs Example
+Age: 61 and 59
+Objective: Tax-efficient growth and income using ISA and GIA.
+
+Recommendation:
+- Invest £150,000 into a diversified multi-asset portfolio aligned to a balanced risk profile.
+- Use ISA allowance first, with remaining funds held in a GIA.
+- Ongoing review service provided annually.
+
+Suitability:
+- Capacity for loss and attitude to risk assessed and documented.
+- Alternative options (e.g. deposit accounts, leaving funds within existing investments) considered and discounted with clear rationale.
+- Costs and charges disclosed in percentage and monetary terms.
+- Risks explained, including that the value of investments can go down as well as up and that capital is not guaranteed.
+
+This recommendation is considered suitable given your objectives, risk profile and capacity for loss.`;
+
+const BAD_SAMPLE = `This investment is guaranteed and has no risk at all.
+You will definitely get better returns than your pension and you cannot lose money.
+
+We have not considered any alternative products or explained any charges in detail.
+There is no discussion of risk, tax, or what happens if markets fall.
+
+This transfer away from a defined benefit pension is obviously better because it offers more flexibility, so we recommend you transfer the full amount now.`;
+
+// -----------------------------
+// UTILITIES: PROGRESS UI
+// -----------------------------
+
+function showProgress(label = 'Analysing…') {
+  if (!progressEl || !barEl || !barLabelEl) return;
+  progressEl.hidden = false;
+  barEl.style.width = '10%';
+  barLabelEl.textContent = label;
 }
 
-const API_URL = '/.netlify/functions/analyze';
-
-const SAMPLE_GOOD = `Client: Jane Doe
-Objective: Long-term growth to age 60.
-Risk: Balanced; Capacity for loss: Medium.
-Charges: OCF 0.25%, Platform 0.20%, Adviser ongoing 0.50%.
-Rationale: Meets objectives and risk, time horizon 15 years. Risks explained.
-Ongoing service: Annual review and periodic statements.`;
-
-const SAMPLE_BAD = `Client: J.D.
-Objective: Make money.
-Risk: High??
-Recommendation: This fund is the best and guarantees performance.
-Charges: n/a.
-Rationale: Great returns seen online. No capacity for loss, no costs, no risks.
-Execution-only. No knowledge/experience assessed.`;
-
-const RULES = {
-  title: 'FCA (COBS) Demo Ruleset',
-  sections: [
-    { id:'comms', title:'COBS 4–6: Communications & Disclosures', subsections:[
-      { id:'clarity', title:'Fair, clear & not misleading', rules:[
-        { id:'no-absolute-claims', title:'No absolutes / guarantees',
-          requirement:'Avoid claims that could mislead (e.g., “guaranteed”, “no risk”).',
-          pass_criteria:'No absolutes; risks balanced.', flag_criteria:'Promotional tone, weak balance.',
-          fail_criteria:'Contains absolutes.', handbook_refs:['COBS 4.2'], severity:'critical',
-          red_flags:['guaranteed','cannot lose','no risk'] },
-        { id:'disclosure-costs', title:'Costs & charges disclosed',
-          requirement:'Clear disclosure of adviser/platform/product costs.',
-          pass_criteria:'Costs with % or £.', flag_criteria:'Costs mentioned but no figures.',
-          fail_criteria:'No costs mentioned.', handbook_refs:['COBS 6','COBS 6.1ZA'], severity:'major' }
-      ]}
-    ]},
-    { id:'suitability', title:'COBS 9: Suitability', subsections:[
-      { id:'objectives', title:'Client objectives & rationale', rules:[
-        { id:'obj-stated', title:'Objectives stated',
-          requirement:'Documented objectives & time horizon.',
-          pass_criteria:'Clear objective + horizon.', flag_criteria:'Vague objective.',
-          fail_criteria:'No objective.', handbook_refs:['COBS 9A.2'], severity:'major' },
-        { id:'rationale-evidence', title:'Recommendation rationale',
-          requirement:'Explain why rec meets needs, risk, capacity.',
-          pass_criteria:'Rationale links to risk/capacity/objectives.', flag_criteria:'Rationale thin.',
-          fail_criteria:'No rationale.', handbook_refs:['COBS 9A.2.1R'], severity:'major' }
-      ]},
-      { id:'risk', title:'Risk & capacity for loss', rules:[
-        { id:'risk-declared', title:'Risk profile declared',
-          requirement:'State risk tolerance and capacity for loss.',
-          pass_criteria:'Both present and consistent.', flag_criteria:'Only one or vague.',
-          fail_criteria:'Neither present.', handbook_refs:['COBS 9A'], severity:'major' }
-      ]},
-      { id:'replacement', title:'Replacement business', rules:[
-        { id:'rep-like', title:'Like-for-like comparison (if switching)',
-          requirement:'Compare charges/features; best-interest rationale.',
-          pass_criteria:'Quantified comparison + tailored rationale.', flag_criteria:'Mentions switch but lacks figures/features.',
-          fail_criteria:'No comparison.', handbook_refs:['COBS 9A'], severity:'critical', context:{advice_type:['replacement']} }
-      ]},
-      { id:'retirement', title:'Retirement income (drawdown)', rules:[
-        { id:'draw-sustain', title:'Withdrawal sustainability & sequencing risk',
-          requirement:'Discuss sustainability and contingencies.',
-          pass_criteria:'Rate + stress/sustainability + contingency.', flag_criteria:'Mentions withdrawals without detail.',
-          fail_criteria:'No sustainability discussion.', handbook_refs:['COBS 9A','FG21/5'], severity:'major',
-          context:{advice_type:['drawdown'], age_band:['55plus','75plus']} }
-      ]}
-    ]},
-    { id:'appropriateness', title:'COBS 10A: Appropriateness (non-advised)', subsections:[
-      { id:'knowledge', title:'Knowledge & experience', rules:[
-        { id:'app-check', title:'Appropriateness test completed',
-          requirement:'K&E assessed for complex products (non-advised).',
-          pass_criteria:'K&E clearly assessed.', flag_criteria:'Partial/unclear.',
-          fail_criteria:'No appropriateness test.', handbook_refs:['COBS 10A'], severity:'critical',
-          context:{channel:['nonadvised']} }
-      ]}
-    ]},
-    { id:'ongoing', title:'COBS 16: Ongoing requirements', subsections:[
-      { id:'statements', title:'Ongoing service & reports', rules:[
-        { id:'ongoing-service', title:'Ongoing service explained',
-          requirement:'Explain ongoing service and reporting cadence.',
-          pass_criteria:'Clear service & cadence.', flag_criteria:'Mentioned but vague.',
-          fail_criteria:'No statement.', handbook_refs:['COBS 16'], severity:'minor' }
-      ]}
-    ]}
-  ]
-};
-
-let filters = {
-  adviceType:'standard',
-  channel:'advised',
-  ageBand:'55plus',
-  vulnerable:false
-};
-
-let outcomes = {};
-
-function applyContextNotes(){
-  const notes=[];
-  if(filters.adviceType!=='standard'){ notes.push(filters.adviceType.replace('_',' ')); }
-  if(filters.channel==='nonadvised'){ notes.push('non-advised'); }
-  if(filters.ageBand!=='under55'){ notes.push(filters.ageBand); }
-  if(filters.vulnerable){ notes.push('vulnerability flagged'); }
-  const el = document.getElementById('contextNote');
-  if (el) {
-    el.textContent = notes.length ? 'Additional checks: '+notes.join(', ') : 'Standard checks only.';
-  }
+function updateProgress(pct, label) {
+  if (!progressEl || !barEl || !barLabelEl) return;
+  barEl.style.width = `${pct}%`;
+  if (label) barLabelEl.textContent = label;
 }
 
-function pct(n){ return (Math.round(n*1000)/10).toFixed(1)+'%'; }
-
-function isRuleActive(r){
-  const c=r.context; if(!c) return true;
-  if(c.advice_type && !c.advice_type.includes(filters.adviceType)) return false;
-  if(c.channel && !c.channel.includes(filters.channel)) return false;
-  if(c.age_band && !c.age_band.includes(filters.ageBand)) return false;
-  return true;
+function hideProgress() {
+  if (!progressEl || !barEl || !barLabelEl) return;
+  barEl.style.width = '0%';
+  barLabelEl.textContent = '';
+  progressEl.hidden = true;
 }
 
-function evidence(text, rex){
-  const m=text.toLowerCase().match(rex);
-  if(!m) return null;
-  const i=m.index||0;
-  return text
-    .slice(Math.max(0,i-60), Math.min(text.length, i+120))
-    .replace(/\n/g,' ');
-}
+// -----------------------------
+// FILE IMPORT HANDLING
+// Uses: mammoth (DOCX) and pdfjsLib (PDF)
+// -----------------------------
 
+async function handleFileImport(file) {
+  if (!file) return;
+  console.log('[Import] Selected file:', file.name, file.type);
 
-function triggersAbsoluteClaim(text) {
-  const t = text.toLowerCase();
+  const name = file.name.toLowerCase();
+  const ext = name.split('.').pop();
 
-  // Negated/realistic risk warnings -> do NOT fail
-  const negations = [
-    "not guaranteed",
-    "are not guaranteed",
-    "is not guaranteed",
-    "no guarantee that",
-    "cannot be guaranteed",
-    "not a guarantee"
-  ];
-  if (negations.some(n => t.includes(n))) return false;
-
-  // DB transfer context: expected to mention guarantees
-  if (filters.adviceType === "db_transfer") {
-    if (t.includes("guaranteed income")) return false;
-    if (t.includes("guaranteed benefits")) return false;
-  }
-
-  // Genuine red-flag phrasing
-  const bad = [
-    "guaranteed returns",
-    "guaranteed growth",
-    "guaranteed performance",
-    "guaranteed to make money",
-    "cannot lose",
-    "no risk"
-  ];
-
-  return bad.some(b => t.includes(b));
-}
-
-
-function evaluate(text){
-  const t=text.toLowerCase(); const out={};
-
-  // smarter absolute-claims logic
-  const red = /(guaranteed|cannot lose|no risk)/;
-  const hasBadAbsolute = triggersAbsoluteClaim(text);
-  out['no-absolute-claims'] = {
-    status: hasBadAbsolute ? 'fail' : 'pass',
-    snippet: hasBadAbsolute ? evidence(text, red) : null
-  };
-
-  const kwCosts=/(ocf|ongoing|adviser|advice fee|platform|fee|fees|charge|charges|cost|costs)/;
-  const numPct=/(%|£|\d+\.\d{2}|\d+)/;
-  const hasCosts=kwCosts.test(t); const hasNum=numPct.test(text);
-  out['disclosure-costs']={
-    status:(hasCosts&&hasNum)?'pass':(hasCosts?'flag':'fail'),
-    snippet:evidence(text,/(ocf|adviser|platform|fee|charge|cost).{0,40}(%|£|\d)/i)
-  };
-
-  const objPass=/(objective|goal|aim)/.test(t)&&/(retire|retirement|growth|income|time horizon|years?)/.test(t);
-  const objFlag=/(objective|goal|aim)/.test(t);
-  out['obj-stated']={
-    status:objPass?'pass':objFlag?'flag':'fail',
-    snippet:evidence(text,/(objective|goal|aim)/i)
-  };
-
-  const ratPass=/(aligns|rationale|because|therefore|suitable|meets needs)/.test(t)&&/(risk|capacity for loss|time horizon|objective)/.test(t);
-  const ratFlag=/(rationale|because|suitable)/.test(t);
-  out['rationale-evidence']={
-    status:ratPass?'pass':ratFlag?'flag':'fail',
-    snippet:evidence(text,/(rationale|because|suitable)/i)
-  };
-
-  const riskBoth=/risk[: ](low|medium|balanced|high)/.test(t)&&/capacity for loss/.test(t);
-  const riskOne=(/risk[: ]/.test(t)||/capacity for loss/.test(t));
-  out['risk-declared']={
-    status:riskBoth?'pass':riskOne?'flag':'fail',
-    snippet:evidence(text,/(risk|capacity for loss)/i)
-  };
-
-  if(filters.adviceType==='replacement'){
-    const re=/(switch|replace|transfer)/;
-    const comp=/(charge|fee|cost|benefit|feature|exit)/;
-    out['rep-like']={
-      status:re.test(t)?(comp.test(t)?'pass':'flag'):'fail',
-      snippet:evidence(text,/(switch|replace|transfer)/i)
-    };
-  }
-
-  if(filters.adviceType==='drawdown'&&(filters.ageBand!=='under55')){
-    const draw=/(drawdown|withdrawal|income)/;
-    const sust=/(sustain|stress|sequence|contingen|buffer|bucketing|rate)/;
-    out['draw-sustain']={
-      status:draw.test(t)?(sust.test(t)?'pass':'flag'):'fail',
-      snippet:evidence(text,/(drawdown|withdrawal|income)/i)
-    };
-  }
-
-  if(filters.channel==='nonadvised'){
-    const app=/(appropriate|appropriateness|knowledge|experience)/;
-    out['app-check']={
-      status:app.test(t)?'pass':'fail',
-      snippet:evidence(text,/(appropriate|appropriateness|knowledge|experience)/i)
-    };
-  } else {
-    out['app-check']={ status:'pass', snippet:null };
-  }
-
-  const on=/ongoing advice|ongoing service|review (annually|yearly|quarterly)|periodic statement/;
-  out['ongoing-service']={
-    status:on.test(t)?'pass':(/ongoing/.test(t)?'flag':'fail'),
-    snippet:evidence(text,/(ongoing|review|statement)/i)
-  };
-
-  return out;
-}
-
-function ruleBlock(r, st, snip){
-  const klass=st==='pass'?'pass':st==='flag'?'flag':st==='fail'?'fail':'mute';
-  const refs=(r.handbook_refs||[]).join(', ');
-  const expl=st==='pass'?r.pass_criteria:st==='flag'?r.flag_criteria:st==='fail'?r.fail_criteria:'Not evaluated';
-  return `<div class='rule'>
-    <div class='rule-head'><span class='pill ${klass}'>${st}</span><strong>${r.title}</strong><span class='refs'>${refs}</span></div>
-    <div class='rule-body'><div class='req'><em>Requirement:</em> ${r.requirement}</div>
-      <div class='expl'><em>Why:</em> ${expl}</div>
-      ${snip? `<div class='expl'><em>Evidence:</em> <code>${snip.replace(/</g,'&lt;')}</code></div>`:''}
-    </div></div>`;
-}
-
-function scoreSubsection(ss){
-  const arr=[];
-  for(const r of ss.rules){
-    if(!isRuleActive(r)) continue;
-    const o=outcomes[r.id];
-    if(o) arr.push({pass:1,flag:0.5,fail:0}[o.status]);
-  }
-  return arr.length? (arr.reduce((a,b)=>a+b,0)/arr.length) : null;
-}
-
-function scoreSection(s){
-  const arr=[];
-  for(const ss of s.subsections){
-    const v=scoreSubsection(ss);
-    if(v!==null) arr.push(v);
-  }
-  return arr.length? (arr.reduce((a,b)=>a+b,0)/arr.length) : null;
-}
-
-function calcOverall(){
-  const sScores=[];
-  for(const s of RULES.sections){
-    const sub=[];
-    for(const ss of s.subsections){
-      const rScores=[];
-      for(const r of ss.rules){
-        if(!isRuleActive(r)) continue;
-        if(outcomes[r.id]) rScores.push({pass:1,flag:0.5,fail:0}[outcomes[r.id].status]);
+  try {
+    if (ext === 'docx') {
+      const arrayBuffer = await file.arrayBuffer();
+      if (typeof mammoth === 'undefined') {
+        console.warn('[Import] mammoth not available; fallback to raw text');
+        const textFallback = await file.text();
+        srTextEl.value = textFallback;
+        return;
       }
-      sub.push(rScores.length? (rScores.reduce((a,b)=>a+b,0)/rScores.length) : null);
-    }
-    const clean=sub.filter(v=>v!==null);
-    sScores.push(clean.length? (clean.reduce((a,b)=>a+b,0)/clean.length) : null);
-  }
-  const used=sScores.filter(v=>v!==null);
-  return used.length? (used.reduce((a,b)=>a+b,0)/used.length) : null;
-}
-
-function render(){
-  const acc=document.getElementById('accordion');
-  if (!acc) return;
-  acc.innerHTML='';
-
-  for(const section of RULES.sections){
-    const sEl=document.createElement('details');
-    sEl.open=true;
-    const sScore=scoreSection(section);
-    sEl.innerHTML =
-      `<summary class='summary'>${section.title} <small>(${sScore!==null? pct(sScore): '—'})</small></summary>`;
-    const inner=document.createElement('div');
-    inner.className='inner';
-
-    for(const ss of section.subsections){
-      const ssScore=scoreSubsection(ss);
-      const box=document.createElement('div');
-      box.className='subbox';
-      box.innerHTML = `<h3>${ss.title} <small>(${ssScore!==null? pct(ssScore): '—'})</small></h3>`;
-      for(const r of ss.rules){
-        if(!isRuleActive(r)) continue;
-        const o=outcomes[r.id];
-        const st=o?o.status:'not evaluated';
-        const sn=o?o.snippet:'';
-        box.insertAdjacentHTML('beforeend', ruleBlock(r, st, sn));
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      srTextEl.value = result.value || '';
+      console.log('[Import] DOCX text length:', srTextEl.value.length);
+    } else if (ext === 'pdf') {
+      const arrayBuffer = await file.arrayBuffer();
+      if (typeof pdfjsLib === 'undefined') {
+        console.warn('[Import] pdfjsLib not available; fallback to raw text');
+        const textFallback = await file.text();
+        srTextEl.value = textFallback;
+        return;
       }
-      inner.appendChild(box);
+
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const strings = content.items.map((item) => item.str);
+        fullText += strings.join(' ') + '\n\n';
+      }
+
+      srTextEl.value = fullText.trim();
+      console.log('[Import] PDF text length:', srTextEl.value.length);
+    } else {
+      // Plain text or anything else we just read as text
+      const text = await file.text();
+      srTextEl.value = text;
+      console.log('[Import] Text file length:', text.length);
     }
-
-    sEl.appendChild(inner);
-    acc.appendChild(sEl);
-  }
-
-  const overall=calcOverall();
-  const overallEl = document.getElementById('overall');
-  if (overallEl) {
-    overallEl.textContent = overall!==null? pct(overall): '—';
+  } catch (err) {
+    console.error('[Import] Failed to read file', err);
+    alert('Could not read that file. Please check the console for details.');
   }
 }
 
-function progressSim(done){
-  const el=document.getElementById('progress');
-  const bar=document.getElementById('bar');
-  const lab=document.getElementById('barLabel');
-  if (!el || !bar || !lab) { done(); return; }
-  el.hidden=false;
-  let v=0;
-  const step=()=>{
-    v+=Math.random()*18+6;
-    if(v>=100){
-      v=100;
-      bar.style.width=v+'%';
-      lab.textContent='Finalising…';
-      setTimeout(()=>{el.hidden=true; done();}, 450);
-      return;
-    }
-    bar.style.width=v+'%';
-    lab.textContent = v<60? 'Parsing report…' : v<90? 'Checking rules…' : 'Scoring…';
-    setTimeout(step, 240);
-  };
-  step();
-}
+// -----------------------------
+// BACKEND CALL VIA NETLIFY FUNCTION
+// -----------------------------
 
 // Call Netlify function → Render backend and return parsed JSON
 async function getBackendOutcomes(text, filters) {
@@ -367,18 +155,14 @@ async function getBackendOutcomes(text, filters) {
       })
     });
 
-    // If HTTP status is not OK, log and bail out
     if (!response.ok) {
       console.error('Backend HTTP error', response.status);
+      const respText = await response.text().catch(() => '');
+      console.error('Backend error body:', respText);
       return null;
     }
 
-    // Parse JSON from the backend
     const data = await response.json();
-
-    // You can adapt this depending on what you want to use:
-    // - return data.outcomes if you only care about rule outcomes
-    // - or return the whole object and handle it elsewhere
     return data;
   } catch (err) {
     console.error('Backend call failed', err);
@@ -386,128 +170,315 @@ async function getBackendOutcomes(text, filters) {
   }
 }
 
+// -----------------------------
+// RENDERING RESULTS
+// -----------------------------
 
-
-  const raw = await res.text();
-  let data = {};
-  try { data = raw ? JSON.parse(raw) : {}; } catch(e){ data = {}; }
-
-  if(!res.ok){
-    console.warn('Backend error', res.status, res.statusText, raw);
-    return null;
-  }
-
-  if(data && data.outcomes && typeof data.outcomes === 'object'){
-    console.log('Using backend outcomes');
-    return data.outcomes;
-  }
-
-  console.log('Backend returned no usable outcomes; falling back to local evaluate()');
-  return null;
+function statusClass(status) {
+  if (!status) return '';
+  const s = String(status).toLowerCase();
+  if (s === 'pass') return 'pass';
+  if (s === 'flag' || s === 'warning') return 'flag';
+  if (s === 'fail' || s === 'error') return 'fail';
+  return '';
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const srText=document.getElementById('srText');
-  if (!srText) return;
+function statusLabel(status) {
+  if (!status) return '—';
+  const s = String(status).toLowerCase();
+  if (s === 'pass') return 'PASS';
+  if (s === 'flag' || s === 'warning') return 'FLAG';
+  if (s === 'fail' || s === 'error') return 'FAIL';
+  return s.toUpperCase();
+}
 
-  const loadGood=document.getElementById('loadGood');
-  const loadBad=document.getElementById('loadBad');
-  const fileInput=document.getElementById('fileInput');
-  const runBtn=document.getElementById('runBtn');
-  const exportBtn=document.getElementById('exportBtn');
+function renderScore(data, filters) {
+  if (!overallEl || !contextNoteEl) return;
 
-  if (loadGood) loadGood.onclick=()=>{ srText.value=SAMPLE_GOOD; };
-  if (loadBad) loadBad.onclick =()=>{ srText.value=SAMPLE_BAD; };
+  let score = null;
 
-  if (fileInput) {
-    fileInput.addEventListener('change', async (e)=>{
-      const f=e.target.files[0]; if(!f) return;
-      const name=f.name.toLowerCase();
-      try{
-        let text='';
-        if(name.endsWith('.txt')){
-          text = await f.text();
-        } else if(name.endsWith('.docx')){
-          const ab = await f.arrayBuffer();
-          const res = await window.mammoth.extractRawText({arrayBuffer:ab});
-          text = res.value || '';
-        } else if(name.endsWith('.pdf')){
-          const ab = await f.arrayBuffer();
-          const pdf = await window.pdfjsLib.getDocument({data:ab}).promise;
-          let t='';
-          for(let p=1;p<=pdf.numPages;p++){
-            const pg=await pdf.getPage(p);
-            const c=await pg.getTextContent();
-            t += '\n\n' + c.items.map(i=>i.str).join(' ');
-          }
-          text = t;
-        } else {
-          alert('Unsupported file type. Please upload .txt, .docx or .pdf');
-          return;
-        }
-        srText.value = text;
-      }catch(err){
-        console.error(err);
-        alert('Could not read that file. If it is a scanned PDF, text extraction may not work.');
+  if (typeof data?.overall_score === 'number') {
+    // Could be 0–1 or 0–100; normalise
+    score = data.overall_score <= 1 ? Math.round(data.overall_score * 100) : Math.round(data.overall_score);
+  }
+
+  if (score === null && data?.outcomes && typeof data.outcomes === 'object') {
+    // Fallback: compute from rule statuses
+    const vals = [];
+    const outcomes = data.outcomes;
+    Object.values(outcomes).forEach((ruleOrSection) => {
+      if (Array.isArray(ruleOrSection.rules)) {
+        ruleOrSection.rules.forEach((r) => {
+          const st = String(r.status || '').toLowerCase();
+          if (st === 'pass') vals.push(1);
+          else if (st === 'flag') vals.push(0.5);
+          else if (st === 'fail') vals.push(0);
+        });
+      } else if (ruleOrSection && typeof ruleOrSection === 'object') {
+        const st = String(ruleOrSection.status || '').toLowerCase();
+        if (st === 'pass') vals.push(1);
+        else if (st === 'flag') vals.push(0.5);
+        else if (st === 'fail') vals.push(0);
+      }
+    });
+    if (vals.length > 0) {
+      score = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 100);
+    }
+  }
+
+  if (score === null) {
+    overallEl.textContent = '—';
+  } else {
+    overallEl.textContent = `${score}%`;
+  }
+
+  // Context note from filters
+  const bits = [];
+  if (filters?.advice_type) bits.push(`Advice type: ${filters.advice_type}`);
+  if (filters?.channel) bits.push(`Channel: ${filters.channel}`);
+  if (filters?.age_band) bits.push(`Age band: ${filters.age_band}`);
+  if (filters?.vulnerable) bits.push('Vulnerability flagged');
+
+  contextNoteEl.textContent = bits.length
+    ? `Context used for this run — ${bits.join(' • ')}`
+    : '';
+}
+
+function renderAccordion(data) {
+  if (!accordionEl) return;
+  accordionEl.innerHTML = '';
+
+  if (!data) {
+    accordionEl.innerHTML = '<div class="card">No results to display.</div>';
+    return;
+  }
+
+  const outcomes = data.outcomes || data.sections || data.rules;
+  if (!outcomes) {
+    accordionEl.innerHTML = '<div class="card">No structured rule outcomes returned from backend.</div>';
+    return;
+  }
+
+  // Normalise into an array of "sections"
+  const sections = [];
+
+  if (Array.isArray(outcomes)) {
+    // e.g. [{id, title, rules: [...]}, ...]
+    outcomes.forEach((sec, idx) => {
+      sections.push({
+        id: sec.id || `section-${idx}`,
+        title: sec.title || sec.name || `Section ${idx + 1}`,
+        description: sec.description || '',
+        rules: sec.rules || []
+      });
+    });
+  } else if (typeof outcomes === 'object') {
+    // Object map of sections or rules
+    Object.entries(outcomes).forEach(([key, val], idx) => {
+      if (Array.isArray(val?.rules)) {
+        sections.push({
+          id: key,
+          title: val.title || key,
+          description: val.description || '',
+          rules: val.rules
+        });
+      } else if (val && typeof val === 'object') {
+        // Treat as a "flat" rule under a generic section
+        sections.push({
+          id: `section-${idx}`,
+          title: val.section || 'Rule outcomes',
+          description: '',
+          rules: [val]
+        });
       }
     });
   }
 
-  if (runBtn) {
-    runBtn.onclick = () => {
-      const txt=srText.value.trim();
-      if(!txt){
-        alert('Paste some SR text or load a file first.');
-        return;
-      }
+  if (!sections.length) {
+    accordionEl.innerHTML = '<div class="card">No rule-level details available.</div>';
+    return;
+  }
 
-      const adviceTypeEl = document.getElementById('adviceType');
-      const channelEl = document.getElementById('channel');
-      const ageBandEl = document.getElementById('ageBand');
-      const vulnerableEl = document.getElementById('vulnerable');
+  const fragment = document.createDocumentFragment();
 
-      if (adviceTypeEl) filters.adviceType = adviceTypeEl.value;
-      if (channelEl) filters.channel = channelEl.value;
-      if (ageBandEl) filters.ageBand = ageBandEl.value;
-      if (vulnerableEl) filters.vulnerable = vulnerableEl.checked;
+  sections.forEach((section) => {
+    const card = document.createElement('div');
+    card.className = 'card';
 
-      applyContextNotes();
+    const details = document.createElement('details');
+    details.open = true;
 
-      progressSim(async () => {
-        let backendOut = null;
-        try {
-          backendOut = await getBackendOutcomes(txt);
-        } catch (e) {
-          console.error('Backend call failed', e);
+    const summary = document.createElement('summary');
+    summary.className = 'summary';
+    summary.innerHTML = `
+      <span>${section.title || 'Section'}</span>
+      ${section.description ? `<span class="refs">${section.description}</span>` : ''}
+    `;
+
+    const inner = document.createElement('div');
+    inner.className = 'inner';
+
+    if (Array.isArray(section.rules) && section.rules.length > 0) {
+      section.rules.forEach((rule) => {
+        const ruleDiv = document.createElement('div');
+        ruleDiv.className = 'rule';
+
+        const pillCls = statusClass(rule.status);
+        const pillLbl = statusLabel(rule.status);
+
+        const ruleHead = document.createElement('div');
+        ruleHead.className = 'rule-head';
+        ruleHead.innerHTML = `
+          <span class="pill ${pillCls}">${pillLbl}</span>
+          <strong>${rule.title || rule.name || rule.id || 'Rule'}</strong>
+          ${
+            rule.ref
+              ? `<span class="refs">${rule.ref}</span>`
+              : rule.regulation
+              ? `<span class="refs">${rule.regulation}</span>`
+              : ''
+          }
+        `;
+
+        const body = document.createElement('div');
+        const bits = [];
+
+        if (rule.requirement) {
+          bits.push(`<div><strong>Requirement:</strong> ${rule.requirement}</div>`);
+        }
+        if (rule.why) {
+          bits.push(`<div><strong>Why it matters:</strong> ${rule.why}</div>`);
+        }
+        if (rule.snippet || rule.evidence) {
+          bits.push(
+            `<div><strong>Evidence:</strong> <span class="refs">${
+              rule.snippet || rule.evidence
+            }</span></div>`
+          );
+        }
+        if (!bits.length && rule.detail) {
+          bits.push(`<div>${rule.detail}</div>`);
         }
 
-        if (backendOut && Object.keys(backendOut).length) {
-          outcomes = backendOut;
-        } else {
-          outcomes = evaluate(txt);
-        }
+        body.innerHTML = bits.join('') || '<div class="refs">No additional detail provided.</div>';
 
-        render();
-        window.scrollTo({top:0,behavior:'smooth'});
+        ruleDiv.appendChild(ruleHead);
+        ruleDiv.appendChild(body);
+        inner.appendChild(ruleDiv);
       });
-    };
+    } else {
+      inner.innerHTML = '<div class="refs">No rules returned for this section.</div>';
+    }
+
+    details.appendChild(summary);
+    details.appendChild(inner);
+    card.appendChild(details);
+    fragment.appendChild(card);
+  });
+
+  accordionEl.appendChild(fragment);
+}
+
+// -----------------------------
+// MAIN RUN HANDLER
+// -----------------------------
+
+async function runCheck() {
+  const text = (srTextEl?.value || '').trim();
+  if (!text) {
+    alert('Paste or import some Suitability Report text first.');
+    return;
   }
 
-  if (exportBtn) {
-    exportBtn.onclick=()=>{
-      if(!outcomes || !Object.keys(outcomes).length){
-        alert('Run a check first.');
-        return;
-      }
-      const payload={ generated_at:new Date().toISOString(), filters, outcomes };
-      const blob=new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
-      const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download='assure_results.json';
-      a.click();
-    };
+  const filters = {
+    advice_type: adviceTypeEl?.value || 'standard',
+    channel: channelEl?.value || 'advised',
+    age_band: ageBandEl?.value || '55plus',
+    vulnerable: !!(vulnerableEl && vulnerableEl.checked)
+  };
+
+  showProgress('Analysing…');
+
+  const data = await getBackendOutcomes(text, filters);
+
+  if (!data) {
+    hideProgress();
+    alert('The backend could not analyse this report. Check the console for details.');
+    return;
   }
 
-  applyContextNotes();
-  render();
+  lastBackendResult = data;
+
+  // Update score + context
+  renderScore(data, filters);
+  // Update accordion / rules
+  renderAccordion(data);
+
+  hideProgress();
+}
+
+// -----------------------------
+// EXPORT RESULTS
+// -----------------------------
+
+function exportResults() {
+  if (!lastBackendResult) {
+    alert('Run a check first before exporting.');
+    return;
+  }
+
+  const blob = new Blob([JSON.stringify(lastBackendResult, null, 2)], {
+    type: 'application/json'
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'assure_results.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// -----------------------------
+// WIRE UP EVENTS
+// -----------------------------
+
+if (loadGoodBtn) {
+  loadGoodBtn.addEventListener('click', () => {
+    srTextEl.value = GOOD_SAMPLE;
+  });
+}
+
+if (loadBadBtn) {
+  loadBadBtn.addEventListener('click', () => {
+    srTextEl.value = BAD_SAMPLE;
+  });
+}
+
+if (fileInputEl) {
+  fileInputEl.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    await handleFileImport(file);
+  });
+}
+
+if (runBtn) {
+  runBtn.addEventListener('click', () => {
+    runCheck();
+  });
+}
+
+if (exportBtn) {
+  exportBtn.addEventListener('click', () => {
+    exportResults();
+  });
+}
+
+// Optional: keyboard shortcut (Ctrl+Enter) to run check
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    runCheck();
+  }
 });
